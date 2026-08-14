@@ -126,9 +126,8 @@ project = "my-project"
 | `environment`          | string          | "Dev"                    | No       | Environment name (Dev, Prod, etc.) |
 | `integration`          | string          | "default_integration"    | No       | Integration name                   |
 | `project`              | string          | "default_project"        | No       | Project name                       |
-| `enableWorkflowManagement` | boolean     | false                    | No       | Accept workflow management commands from the ICP (also gates the legacy `workflowCallbackUrl`) |
-| `runtimeHostUrl`       | string          | "http://localhost"       | No       | Host URL used to build the legacy workflow callback URL |
-| `workflowManagementApiPort` | int        | 8234                     | No       | Port of the legacy workflow management REST API |
+| `enableWorkflowManagement` | boolean     | false                    | No       | Allow the ICP to tunnel workflow management commands to this runtime |
+| `runtimeHostUrl`       | string          | "http://localhost"       | No       | Reachable host URL of this runtime, used for the Try-It host |
 
 ### Workflow integration
 

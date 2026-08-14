@@ -105,7 +105,6 @@ public type Heartbeat record {|
     string runtimeHash;
     time:Utc timestamp;
     map<log:Level> logLevels?;
-    string workflowCallbackUrl?;
     string tryItHost?;
     map<json> openApiDefinitions?;
     // The workflow metadata document (definitions, human tasks, activities, agents, with
@@ -133,7 +132,6 @@ public type HeartbeatForHash record {|
     Node nodeInfo;
     Artifacts artifacts;
     map<log:Level> logLevels?;
-    string workflowCallbackUrl?;
     string tryItHost?;
 |};
 
@@ -228,7 +226,7 @@ public type HeartbeatResponse record {
     boolean fullHeartbeatRequired?;
     ControlCommand[] commands = [];
     // Names of optional Heartbeat fields the connected ICP server understands (e.g.
-    // "tryItHost", "openApiDefinitions", "workflowCallbackUrl", "workflowMetadata").
+    // "tryItHost", "openApiDefinitions", "workflowMetadata").
     // Absent on servers that predate this negotiation (they simply reject those
     // fields), so the bridge must treat a missing value as "no optional fields
     // supported" rather than an error.

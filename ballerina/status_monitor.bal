@@ -74,8 +74,6 @@ isolated function getHeartbeat(string[] supportedHeartbeatFields = []) returns H
             main: check getMainArtifact()
         },
         logLevels: getLogLevels(),
-        workflowCallbackUrl: (enableWorkflowManagement && isHeartbeatFieldSupported(supportedHeartbeatFields, "workflowCallbackUrl"))
-            ? getWorkflowCallbackUrl() : (),
         tryItHost: isHeartbeatFieldSupported(supportedHeartbeatFields, "tryItHost") ? getTryItHost() : ()
     };
 
@@ -102,7 +100,6 @@ isolated function getHeartbeat(string[] supportedHeartbeatFields = []) returns H
         runtimeHash: runtimeHash,
         timestamp: time:utcNow(),
         logLevels: heartbeatForHash.logLevels,
-        workflowCallbackUrl: heartbeatForHash?.workflowCallbackUrl,
         tryItHost: heartbeatForHash?.tryItHost
     };
 
@@ -222,9 +219,9 @@ isolated function getMainArtifact() returns MainDetail?|error =
 } external;
 
 // Strips trailing slashes and any path segment from the configured runtimeHostUrl, returning
-// both the cleaned scheme+host[:port] and the bare authority (host[:port], no scheme) — shared
-// by getWorkflowCallbackUrl (needs the scheme, to build a callable base URL) and getTryItHost
-// (needs just the host, since the Try-It proxy already knows the target port separately).
+// both the cleaned scheme+host[:port] and the bare authority (host[:port], no scheme) — used
+// by getTryItHost (needs just the host, since the Try-It proxy already knows the target port
+// separately).
 isolated function getConfiguredHostUrl() returns [string, string] {
     string hostUrl = runtimeHostUrl.trim();
     // Strip trailing slashes to avoid a malformed "http://host/:port".
@@ -241,16 +238,6 @@ isolated function getConfiguredHostUrl() returns [string, string] {
         hostUrl = hostUrl.substring(0, authorityStart) + authority;
     }
     return [hostUrl, authority];
-}
-
-isolated function getWorkflowCallbackUrl() returns string {
-    var [hostUrl, authority] = getConfiguredHostUrl();
-    // If runtimeHostUrl already includes a port, use it as-is rather than
-    // appending the management port and producing "host:8080:9090".
-    if authority.includes(":") {
-        return hostUrl;
-    }
-    return string `${hostUrl}:${workflowManagementApiPort}`;
 }
 
 // Bare, reachable host/IP for this runtime (no scheme, no port) reported in every heartbeat so
