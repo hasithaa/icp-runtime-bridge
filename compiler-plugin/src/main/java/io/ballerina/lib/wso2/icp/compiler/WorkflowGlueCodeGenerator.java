@@ -18,14 +18,9 @@
 
 package io.ballerina.lib.wso2.icp.compiler;
 
-import io.ballerina.compiler.syntax.tree.IdentifierToken;
-import io.ballerina.compiler.syntax.tree.ImportDeclarationNode;
-import io.ballerina.compiler.syntax.tree.ModulePartNode;
-import io.ballerina.compiler.syntax.tree.SeparatedNodeList;
-import io.ballerina.projects.Document;
-import io.ballerina.projects.DocumentId;
-import io.ballerina.projects.Module;
 import io.ballerina.projects.Package;
+import io.ballerina.projects.ResolvedPackageDependency;
+import io.ballerina.projects.SemanticVersion;
 import io.ballerina.projects.plugins.CodeGenerator;
 import io.ballerina.projects.plugins.CodeGeneratorContext;
 import io.ballerina.projects.plugins.GeneratorTask;
@@ -36,19 +31,20 @@ import io.ballerina.tools.text.TextDocuments;
 /**
  * Generates the glue that wires an integration's workflow runtime into this bridge.
  *
- * <p>When the user's package imports {@code ballerina/workflow}, a source file is added to the
- * default module that registers {@code workflow.management.rest}'s metadata provider and command
- * executor with the bridge ({@code registerWorkflowIntegration}). With that, importing
+ * <p>When the user's package depends on {@code ballerina/workflow} 0.9.0 or later, a source file
+ * is added to the default module that registers the workflow management metadata provider and
+ * command executor with the bridge ({@code registerWorkflowIntegration}). With that, importing
  * {@code wso2/icp.runtime.bridge} is all an integration needs for the ICP to receive workflow
  * metadata in heartbeats and (when {@code enableWorkflowManagement = true}) to tunnel workflow
- * management commands — no {@code workflow.management} import, HTTP management API, or extra
- * configuration in the user's code.
+ * management commands — no extra imports, management REST API, or configuration in the user's
+ * code.
  *
- * <p>The generated file imports {@code ballerina/workflow.management.rest}, which resolves from
- * the same {@code ballerina/workflow} package the user already depends on (its REST listener
- * only starts when {@code enableManagementApi = true}, which defaults to false — so no port is
- * opened by this glue). The bridge package itself keeps zero compile-time dependency on
- * {@code ballerina/workflow}.
+ * <p>The generated file imports {@code ballerina/workflow.management} — the stable Ballerina-only
+ * management API, a module of the same {@code ballerina/workflow} package the user already
+ * depends on. It opens no port and starts no service; the bridge package itself keeps zero
+ * compile-time dependency on {@code ballerina/workflow}. {@code getWorkflowMetadata} and
+ * {@code executeManagementCommand} first shipped in workflow 0.9.0, so nothing is generated for
+ * older workflow versions — the integration builds as before, just without ICP workflow support.
  */
 public class WorkflowGlueCodeGenerator extends CodeGenerator {
 
@@ -61,6 +57,8 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
 
         private static final String WORKFLOW_ORG = "ballerina";
         private static final String WORKFLOW_PACKAGE = "workflow";
+        // getWorkflowMetadata/executeManagementCommand first shipped in workflow 0.9.0.
+        private static final SemanticVersion MIN_WORKFLOW_VERSION = SemanticVersion.from("0.9.0");
         private static final String GLUE_FILE_PREFIX = "icp_workflow_glue";
 
         @Override
@@ -69,7 +67,7 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
             if (context.compilation().diagnosticResult().hasErrors()) {
                 return;
             }
-            if (!usesWorkflowPackage(context.currentPackage())) {
+            if (!hasSupportedWorkflowDependency(context)) {
                 return;
             }
             TextDocument glue = TextDocuments.from(glueSource());
@@ -77,32 +75,23 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
         }
 
         /**
-         * Reports whether any source document in the package imports {@code ballerina/workflow}
-         * (or one of its modules, e.g. {@code ballerina/workflow.management}).
+         * Reports whether the package's resolved dependencies include
+         * {@code ballerina/workflow} at {@link #MIN_WORKFLOW_VERSION} or later.
          */
-        private boolean usesWorkflowPackage(Package currentPackage) {
-            for (var moduleId : currentPackage.moduleIds()) {
-                Module module = currentPackage.module(moduleId);
-                for (DocumentId documentId : module.documentIds()) {
-                    Document document = module.document(documentId);
-                    ModulePartNode rootNode = document.syntaxTree().rootNode();
-                    for (ImportDeclarationNode importDecl : rootNode.imports()) {
-                        if (isWorkflowImport(importDecl)) {
-                            return true;
-                        }
-                    }
+        private boolean hasSupportedWorkflowDependency(SourceGeneratorContext context) {
+            for (ResolvedPackageDependency dependency : context.compilation().getResolution().allDependencies()) {
+                Package dependencyPackage = dependency.packageInstance();
+                if (dependencyPackage == null) {
+                    continue;
                 }
+                var descriptor = dependencyPackage.descriptor();
+                if (!WORKFLOW_ORG.equals(descriptor.org().value())
+                        || !WORKFLOW_PACKAGE.equals(descriptor.name().value())) {
+                    continue;
+                }
+                return descriptor.version().value().greaterThanOrEqualTo(MIN_WORKFLOW_VERSION);
             }
             return false;
-        }
-
-        private boolean isWorkflowImport(ImportDeclarationNode importDecl) {
-            if (importDecl.orgName().isEmpty()
-                    || !WORKFLOW_ORG.equals(importDecl.orgName().get().orgName().text())) {
-                return false;
-            }
-            SeparatedNodeList<IdentifierToken> moduleName = importDecl.moduleName();
-            return !moduleName.isEmpty() && WORKFLOW_PACKAGE.equals(moduleName.get(0).text());
         }
 
         /**
@@ -116,7 +105,7 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
                     // Wires this integration's workflow runtime into the ICP bridge: workflow
                     // metadata is published in heartbeats, and (when enableWorkflowManagement is
                     // true) management commands tunneled by the ICP are executed in-process.
-                    import ballerina/workflow.management.rest as _icpWorkflowMgmt;
+                    import ballerina/workflow.management as _icpWorkflowMgmt;
                     import wso2/icp.runtime.bridge as _icpBridge;
 
                     final boolean _icpWorkflowIntegrationRegistered = _icpBridge:registerWorkflowIntegration(

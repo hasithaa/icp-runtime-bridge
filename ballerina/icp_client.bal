@@ -49,9 +49,9 @@ public client class IcpClient {
         return heartbeatResponse;
     }
 
-    // Posts the result of a tunneled workflow management command. Outbound-only, like
-    // heartbeats — the ICP correlates it to the waiting request via the commandId.
-    isolated remote function sendCommandResult(WorkflowCommandResult result) returns error? {
+    // Posts the result of a tunneled command. Outbound-only, like heartbeats — the
+    // ICP correlates it to the waiting request via the commandId.
+    isolated remote function sendCommandResult(TunneledCommandResult result) returns error? {
         http:Request request = new;
         request.setHeader(http:AUTH_HEADER, string `${http:AUTH_SCHEME_BEARER} ${check generateJwtToken()}`);
         request.setPayload(result.toJson());

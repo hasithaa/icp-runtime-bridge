@@ -99,7 +99,7 @@ public class HeartbeatJob {
 
     # Executes the heartbeat job: one heartbeat round, plus bounded follow-up rounds
     # while the server is actively tunneling work. A follow-up happens immediately
-    # after executing a workflow command (its result may already have unblocked the
+    # after executing a tunneled command (its result may already have unblocked the
     # next queued command) or after the server's `nextHeartbeatInSeconds` boost hint
     # (sent while a user is actively working with workflow views). Follow-ups stop
     # once their accumulated delay would exceed one regular interval, so a tick never
@@ -168,8 +168,8 @@ public class HeartbeatJob {
         }
         self.supportedHeartbeatFields = newSupportedHeartbeatFields;
         log:printDebug("Heartbeat acknowledged by ICP server");
-        boolean executedWorkflowCommand = self.handleControlCommands(heartbeatResponse.commands);
-        if executedWorkflowCommand {
+        boolean processedTunneledCommand = self.handleControlCommands(heartbeatResponse.commands);
+        if processedTunneledCommand {
             // Fetch the next queued command right away — the posted result has likely
             // unblocked the ICP-side caller already.
             return 0;
@@ -184,15 +184,15 @@ public class HeartbeatJob {
     # Handles the control commands delivered in a heartbeat response.
     #
     # + commands - The commands from the response
-    # + return - `true` when at least one tunneled workflow command was processed,
-    #            so the caller can immediately fetch the next queued command
+    # + return - `true` when at least one tunneled command was processed, so the
+    #            caller can immediately fetch the next queued command
     function handleControlCommands(ControlCommand[] commands) returns boolean {
         if commands.length() == 0 {
             return false;
         }
 
         boolean artifactsChanged = false;
-        boolean workflowCommandProcessed = false;
+        boolean tunneledCommandProcessed = false;
         foreach ControlCommand command in commands {
             log:printInfo(string `Handling control command: ${command.toJsonString()}`);
             command.status = PENDING;
@@ -201,8 +201,8 @@ public class HeartbeatJob {
             error? result = ();
             match command.action {
                 WORKFLOW_MGMT => {
-                    workflowCommandProcessed = true;
-                    result = self.handleWorkflowCommand(command.payload ?: "");
+                    tunneledCommandProcessed = true;
+                    result = self.handleTunneledCommand(command);
                 }
                 START|STOP => {
                     string artifactName = command.targetArtifact.name;
@@ -263,38 +263,50 @@ public class HeartbeatJob {
             Heartbeat|error newHeartbeat = getHeartbeat(self.supportedHeartbeatFields);
             if newHeartbeat is error {
                 log:printError("Failed to create full heartbeat after control command", newHeartbeat);
-                return workflowCommandProcessed;
+                return tunneledCommandProcessed;
             }
             self.heartbeat = newHeartbeat;
         }
-        return workflowCommandProcessed;
+        return tunneledCommandProcessed;
     }
 
-    # Executes one tunneled workflow management command and posts its result to the
-    # ICP. A command past its deadline is dropped unexecuted — the ICP-side caller
-    # has already timed out, and executing (or replying) then would be wasted work
-    # or, for mutations, an unwanted late effect.
+    # Executes one tunneled command and posts its result to the ICP. A command past
+    # its deadline is dropped unexecuted — the ICP-side caller has already timed
+    # out, and executing (or replying) then would be wasted work or, for mutations,
+    # an unwanted late effect. The command's action selects the executor; adding a
+    # new tunneled command kind means adding an arm to that match.
     #
-    # + rawPayload - The command's JSON payload string
+    # + command - The tunneled control command
     # + return - An error when the payload is unusable or the result could not be
     #            delivered (the command's status is reported FAILED then)
-    function handleWorkflowCommand(string rawPayload) returns error? {
+    function handleTunneledCommand(ControlCommand command) returns error? {
+        string rawPayload = command.payload ?: "";
         if rawPayload == "" {
-            return error("Missing payload for WORKFLOW_MGMT command");
+            return error(string `Missing payload for ${command.action} command`);
         }
-        WorkflowCommandPayload payload = check rawPayload.fromJsonStringWithType();
+        TunneledCommandPayload payload = check rawPayload.fromJsonStringWithType();
 
         string? deadline = payload?.deadline;
         if deadline is string {
             time:Utc|time:Error deadlineTime = time:utcFromString(deadline);
             if deadlineTime is time:Utc && time:utcDiffSeconds(deadlineTime, time:utcNow()) < 0d {
-                log:printWarn(string `Dropping expired workflow command ${payload.commandId} ` +
+                log:printWarn(string `Dropping expired command ${payload.commandId} ` +
                         string `(deadline ${deadline})`);
                 return;
             }
         }
 
-        WorkflowCommandResult result = executeWorkflowCommand(payload);
-        check self.icpClient->sendCommandResult(result);
+        TunneledCommandExecutor? executor = ();
+        boolean accepted = false;
+        match command.action {
+            WORKFLOW_MGMT => {
+                executor = workflowExecutor();
+                accepted = enableWorkflowManagement;
+            }
+        }
+        TunneledCommandResult? result = executeTunneledCommand(payload, executor, accepted);
+        if result is TunneledCommandResult {
+            check self.icpClient->sendCommandResult(result);
+        }
     }
 }
