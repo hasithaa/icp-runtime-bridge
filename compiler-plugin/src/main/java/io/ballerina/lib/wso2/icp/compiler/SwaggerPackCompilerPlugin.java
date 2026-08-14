@@ -31,6 +31,12 @@ import io.ballerina.projects.plugins.CompilerPluginContext;
  * A {@code CodeAnalyzer} generates the OpenAPI documents up front and hands the bytes to a
  * {@code CompilerLifecycleListener} (via an {@link OpenApiDocumentStore} shared between the two,
  * created fresh per compilation) which writes them into the already-built JAR.
+ * <p>
+ * Additionally, when the package imports {@code ballerina/workflow}, a {@code CodeGenerator}
+ * adds glue that wires the workflow runtime into the bridge (metadata publishing and tunneled
+ * management-command execution) — see {@link WorkflowGlueCodeGenerator}. That path is not gated
+ * on {@code remoteManagement}: it produces no build artifacts, and whether anything is sent or
+ * executed is negotiated with the ICP server at runtime.
  */
 public class SwaggerPackCompilerPlugin extends CompilerPlugin {
 
@@ -39,5 +45,6 @@ public class SwaggerPackCompilerPlugin extends CompilerPlugin {
         OpenApiDocumentStore openApiDocs = new OpenApiDocumentStore();
         pluginContext.addCodeAnalyzer(new SwaggerPackCodeAnalyzer(openApiDocs));
         pluginContext.addCompilerLifecycleListener(new SwaggerPackLifecycleListener(openApiDocs));
+        pluginContext.addCodeGenerator(new WorkflowGlueCodeGenerator());
     }
 }

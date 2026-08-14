@@ -108,6 +108,16 @@ public type Heartbeat record {|
     string workflowCallbackUrl?;
     string tryItHost?;
     map<json> openApiDefinitions?;
+    // The workflow metadata document (definitions, human tasks, activities, agents, with
+    // JSON schemas) provided by the integration's workflow runtime via the compiler-plugin
+    // glue. Sent only on full heartbeats and only when the server advertised
+    // "workflowMetadata" in supportedHeartbeatFields. Like openApiDefinitions it is
+    // startup-constant, so it is deliberately NOT part of HeartbeatForHash.
+    map<json> workflowMetadata?;
+    // Optional capabilities this runtime advertises to the server — e.g. "workflowCommands"
+    // when the integration accepts tunneled workflow management commands. The server must
+    // never send a capability-gated command to a runtime that did not advertise it.
+    string[] capabilities?;
 |};
 
 public type HeartbeatForHash record {|

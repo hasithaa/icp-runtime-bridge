@@ -119,6 +119,23 @@ isolated function getHeartbeat(string[] supportedHeartbeatFields = []) returns H
         }
     }
 
+    // Add the workflow metadata document only if the server supports it and a workflow
+    // integration registered one (see workflow_integration.bal). Startup-constant like
+    // openApiDefinitions, so it is not part of the hash.
+    if isHeartbeatFieldSupported(supportedHeartbeatFields, "workflowMetadata") {
+        map<json>? workflowMetadata = currentWorkflowMetadata();
+        if workflowMetadata is map<json> {
+            heartbeat.workflowMetadata = workflowMetadata;
+        }
+    }
+
+    // Advertise runtime capabilities (e.g. accepting tunneled workflow management
+    // commands) so the server can gate capability-specific behavior per runtime.
+    string[]? capabilities = currentCapabilities();
+    if capabilities is string[] {
+        heartbeat.capabilities = capabilities;
+    }
+
     return heartbeat;
 }
 
