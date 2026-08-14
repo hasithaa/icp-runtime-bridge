@@ -95,3 +95,100 @@ isolated function currentCapabilities() returns string[]? {
     }
     return ();
 }
+
+// ── Tunneled command execution ───────────────────────────────────────────────
+
+// Results of recently executed commands, kept so a redelivered commandId (e.g. the
+// result was lost after execution) replays the cached result instead of executing the
+// operation twice — this is what makes mutations like completeHumanTask safe against
+// duplicate delivery. Insertion-ordered FIFO eviction. One record so a single lock
+// covers both structures (a lock may access only one isolated module variable).
+const int PROCESSED_COMMAND_CACHE_CAPACITY = 64;
+
+type ProcessedCommandCache record {|
+    map<WorkflowCommandResult> results = {};
+    string[] insertionOrder = [];
+|};
+
+isolated ProcessedCommandCache processedCommands = {};
+
+# Executes one tunneled workflow management command. Never panics or returns an
+# error: every outcome — including "workflow management disabled" and executor
+# failures — becomes a result the ICP can deliver to the waiting caller.
+#
+# + payload - The command payload from the `WORKFLOW_MGMT` control command
+# + return - The result to post to `POST /icp/commandResult`
+isolated function executeWorkflowCommand(WorkflowCommandPayload payload) returns WorkflowCommandResult {
+    WorkflowCommandResult? cached = cachedCommandResult(payload.commandId);
+    if cached is WorkflowCommandResult {
+        log:printInfo(string `Replaying cached result for redelivered workflow command: ${payload.commandId}`);
+        return cached;
+    }
+
+    WorkflowCommandExecutor? executor;
+    lock {
+        executor = workflowCommandExecutor;
+    }
+
+    WorkflowCommandResult result;
+    if executor is () || !enableWorkflowManagement {
+        // The capability is only advertised when both hold (currentCapabilities), so this
+        // is a server-side gating bug or a config change since the last heartbeat.
+        result = {
+            runtimeId: currentRuntimeId,
+            commandId: payload.commandId,
+            status: "FAILED",
+            httpStatus: 403,
+            body: {"error": {"message": "Workflow management commands are not accepted by this runtime"}}
+        };
+    } else {
+        map<json> command = {
+            operation: payload.operation,
+            params: payload.params,
+            identity: {userId: payload.identity.userId, roles: payload.identity.roles}
+        };
+        map<json>|error outcome = executor(command);
+        if outcome is error {
+            log:printError(string `Workflow command execution failed: ${payload.commandId}`, outcome);
+            result = {
+                runtimeId: currentRuntimeId,
+                commandId: payload.commandId,
+                status: "FAILED",
+                httpStatus: 500,
+                body: {"error": {"message": outcome.message()}}
+            };
+        } else {
+            json httpStatus = outcome["httpStatus"];
+            result = {
+                runtimeId: currentRuntimeId,
+                commandId: payload.commandId,
+                status: "COMPLETED",
+                httpStatus: httpStatus is int ? httpStatus : 500,
+                body: outcome["body"]
+            };
+        }
+    }
+    cacheCommandResult(result);
+    return result;
+}
+
+isolated function cachedCommandResult(string commandId) returns WorkflowCommandResult? {
+    lock {
+        WorkflowCommandResult? cached = processedCommands.results[commandId];
+        return cached is WorkflowCommandResult ? cached.clone() : ();
+    }
+}
+
+isolated function cacheCommandResult(WorkflowCommandResult result) {
+    lock {
+        if processedCommands.results.hasKey(result.commandId) {
+            return;
+        }
+        if processedCommands.insertionOrder.length() >= PROCESSED_COMMAND_CACHE_CAPACITY {
+            string evicted = processedCommands.insertionOrder.shift();
+            _ = processedCommands.results.removeIfHasKey(evicted);
+        }
+        processedCommands.insertionOrder.push(result.commandId);
+        processedCommands.results[result.commandId] = result.clone();
+    }
+}

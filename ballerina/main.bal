@@ -15,6 +15,7 @@
 import ballerina/lang.runtime;
 import ballerina/log;
 import ballerina/task;
+import ballerina/time;
 
 function init() returns error? {
     log:printInfo("Starting ICP agent...");
@@ -96,15 +97,45 @@ public class HeartbeatJob {
         self.heartbeat = check getHeartbeat(self.supportedHeartbeatFields);
     }
 
-    # Executes the heartbeat job.
+    # Executes the heartbeat job: one heartbeat round, plus bounded follow-up rounds
+    # while the server is actively tunneling work. A follow-up happens immediately
+    # after executing a workflow command (its result may already have unblocked the
+    # next queued command) or after the server's `nextHeartbeatInSeconds` boost hint
+    # (sent while a user is actively working with workflow views). Follow-ups stop
+    # once their accumulated delay would exceed one regular interval, so a tick never
+    # runs much past the next scheduled one — which then continues the boost.
     public function execute() {
+        decimal boostBudget = self.interval;
+        while true {
+            decimal? followUpDelay = self.heartbeatRound();
+            if followUpDelay is () {
+                return;
+            }
+            // An immediate follow-up (delay 0, after executing a command) still consumes
+            // budget so a long command queue cannot keep this tick spinning forever.
+            decimal consumed = decimal:max(followUpDelay, 1);
+            if consumed > boostBudget {
+                return;
+            }
+            boostBudget -= consumed;
+            if followUpDelay > 0d {
+                runtime:sleep(followUpDelay);
+            }
+        }
+    }
 
+    # Sends one heartbeat (full or delta), processes the response, and decides whether
+    # a follow-up round is wanted.
+    #
+    # + return - Seconds to wait before the follow-up round (0 = immediately), or `()`
+    #            when no follow-up is needed this tick
+    function heartbeatRound() returns decimal? {
         HeartbeatResponse|error heartbeatResponse;
         if (self.fullHeartbeatRequired) {
             Heartbeat|error newHeartbeat = getHeartbeat(self.supportedHeartbeatFields);
             if newHeartbeat is error {
                 log:printError("Failed to create full heartbeat", newHeartbeat);
-                return;
+                return ();
             }
             self.heartbeat = newHeartbeat;
             log:printInfo("Sending full heartbeat to ICP server");
@@ -114,17 +145,17 @@ public class HeartbeatJob {
             DeltaHeartbeat|error deltaHeartbeat = getDeltaHeartbeat(self.heartbeat);
             if deltaHeartbeat is error {
                 log:printError("Failed to create delta heartbeat", deltaHeartbeat);
-                return;
+                return ();
             }
             log:printDebug("Sending delta heartbeat to ICP server");
             heartbeatResponse = self.icpClient->sendDeltaHeartbeat(deltaHeartbeat);
         }
         if heartbeatResponse is error {
             log:printError("Heartbeat response error", heartbeatResponse);
-            return;
+            return ();
         }
         if !heartbeatResponse.acknowledged {
-            return;
+            return ();
         }
         self.fullHeartbeatRequired = heartbeatResponse.fullHeartbeatRequired ?: false;
         string[] newSupportedHeartbeatFields = heartbeatResponse.supportedHeartbeatFields ?: [];
@@ -137,15 +168,31 @@ public class HeartbeatJob {
         }
         self.supportedHeartbeatFields = newSupportedHeartbeatFields;
         log:printDebug("Heartbeat acknowledged by ICP server");
-        self.handleControlCommands(heartbeatResponse.commands);
+        boolean executedWorkflowCommand = self.handleControlCommands(heartbeatResponse.commands);
+        if executedWorkflowCommand {
+            // Fetch the next queued command right away — the posted result has likely
+            // unblocked the ICP-side caller already.
+            return 0;
+        }
+        int? boostHint = heartbeatResponse.nextHeartbeatInSeconds;
+        if boostHint is int && boostHint > 0 && <decimal>boostHint < self.interval {
+            return <decimal>boostHint;
+        }
+        return ();
     }
 
-    function handleControlCommands(ControlCommand[] commands) {
+    # Handles the control commands delivered in a heartbeat response.
+    #
+    # + commands - The commands from the response
+    # + return - `true` when at least one tunneled workflow command was processed,
+    #            so the caller can immediately fetch the next queued command
+    function handleControlCommands(ControlCommand[] commands) returns boolean {
         if commands.length() == 0 {
-            return;
+            return false;
         }
 
         boolean artifactsChanged = false;
+        boolean workflowCommandProcessed = false;
         foreach ControlCommand command in commands {
             log:printInfo(string `Handling control command: ${command.toJsonString()}`);
             command.status = PENDING;
@@ -153,6 +200,10 @@ public class HeartbeatJob {
             // Handle different command actions
             error? result = ();
             match command.action {
+                WORKFLOW_MGMT => {
+                    workflowCommandProcessed = true;
+                    result = self.handleWorkflowCommand(command.payload ?: "");
+                }
                 START|STOP => {
                     string artifactName = command.targetArtifact.name;
                     boolean isStart = command.action == START;
@@ -212,9 +263,38 @@ public class HeartbeatJob {
             Heartbeat|error newHeartbeat = getHeartbeat(self.supportedHeartbeatFields);
             if newHeartbeat is error {
                 log:printError("Failed to create full heartbeat after control command", newHeartbeat);
-                return;
+                return workflowCommandProcessed;
             }
             self.heartbeat = newHeartbeat;
         }
+        return workflowCommandProcessed;
+    }
+
+    # Executes one tunneled workflow management command and posts its result to the
+    # ICP. A command past its deadline is dropped unexecuted — the ICP-side caller
+    # has already timed out, and executing (or replying) then would be wasted work
+    # or, for mutations, an unwanted late effect.
+    #
+    # + rawPayload - The command's JSON payload string
+    # + return - An error when the payload is unusable or the result could not be
+    #            delivered (the command's status is reported FAILED then)
+    function handleWorkflowCommand(string rawPayload) returns error? {
+        if rawPayload == "" {
+            return error("Missing payload for WORKFLOW_MGMT command");
+        }
+        WorkflowCommandPayload payload = check rawPayload.fromJsonStringWithType();
+
+        string? deadline = payload?.deadline;
+        if deadline is string {
+            time:Utc|time:Error deadlineTime = time:utcFromString(deadline);
+            if deadlineTime is time:Utc && time:utcDiffSeconds(deadlineTime, time:utcNow()) < 0d {
+                log:printWarn(string `Dropping expired workflow command ${payload.commandId} ` +
+                        string `(deadline ${deadline})`);
+                return;
+            }
+        }
+
+        WorkflowCommandResult result = executeWorkflowCommand(payload);
+        check self.icpClient->sendCommandResult(result);
     }
 }

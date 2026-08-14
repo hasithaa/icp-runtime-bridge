@@ -157,8 +157,55 @@ public enum ControlCommandStatus {
 public enum ControlAction {
     START,
     STOP,
-    SET_LOGGER_LEVEL
+    SET_LOGGER_LEVEL,
+    // A tunneled workflow management operation (list/start workflows, complete human
+    // tasks, ...). The server must only send this to runtimes that advertised the
+    // "workflowCommands" capability — older bridges fail record binding on unknown
+    // actions. The command's `payload` is a WorkflowCommandPayload JSON string; the
+    // result is posted back on POST /icp/commandResult.
+    WORKFLOW_MGMT
 };
+
+# The JSON carried in a `WORKFLOW_MGMT` control command's `payload`.
+#
+# + commandId - Correlation ID; the result is posted back under this ID
+# + operation - Dot-qualified management operation name (e.g. `humanTasks.complete`)
+# + params - Operation parameters, keyed like the management REST API's query/path/body
+# + identity - The end user the ICP executes this on behalf of
+# + deadline - ISO-8601 instant after which the command is dropped unexecuted
+public type WorkflowCommandPayload record {|
+    string commandId;
+    string operation;
+    map<json> params = {};
+    WorkflowCommandIdentity identity = {};
+    string deadline?;
+|};
+
+# The caller identity a tunneled workflow command executes on behalf of. Same
+# semantics as the management REST API's `x-user-id` / `x-user-roles` headers.
+#
+# + userId - The user ID, or `()` when unknown
+# + roles - The caller's roles; empty means "no roles"
+public type WorkflowCommandIdentity record {|
+    string? userId = ();
+    string[] roles = [];
+|};
+
+# The outcome of a tunneled workflow command, posted to `POST /icp/commandResult`.
+#
+# + runtimeId - This runtime's ID
+# + commandId - The command's correlation ID
+# + status - `COMPLETED` when the operation executed (regardless of its HTTP-level
+#            outcome), `FAILED` when it could not be executed at all
+# + httpStatus - The status code the management REST API would have returned
+# + body - The response body, byte-identical to the management REST API's
+public type WorkflowCommandResult record {|
+    string runtimeId;
+    string commandId;
+    string status;
+    int httpStatus;
+    json body;
+|};
 
 public type ControlCommand record {
     string commandId;
@@ -181,10 +228,17 @@ public type HeartbeatResponse record {
     boolean fullHeartbeatRequired?;
     ControlCommand[] commands = [];
     // Names of optional Heartbeat fields the connected ICP server understands (e.g.
-    // "tryItHost", "openApiDefinitions", "workflowCallbackUrl"). Absent on servers that
-    // predate this negotiation (they simply reject those fields), so the bridge must
-    // treat a missing value as "no optional fields supported" rather than an error.
+    // "tryItHost", "openApiDefinitions", "workflowCallbackUrl", "workflowMetadata").
+    // Absent on servers that predate this negotiation (they simply reject those
+    // fields), so the bridge must treat a missing value as "no optional fields
+    // supported" rather than an error.
     string[] supportedHeartbeatFields?;
+    // Boost hint: when set (seconds, typically 1), the server wants the next heartbeat
+    // sooner than the configured interval — e.g. while a user is actively working with
+    // workflow views and management commands are being tunneled. The bridge follows up
+    // within the same job tick, bounded by the regular interval, so a stale hint can
+    // never turn the bridge into a tight loop the server didn't ask for.
+    int nextHeartbeatInSeconds?;
 };
 
 // === Configuration ===

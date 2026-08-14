@@ -49,6 +49,20 @@ public client class IcpClient {
         return heartbeatResponse;
     }
 
+    // Posts the result of a tunneled workflow management command. Outbound-only, like
+    // heartbeats — the ICP correlates it to the waiting request via the commandId.
+    isolated remote function sendCommandResult(WorkflowCommandResult result) returns error? {
+        http:Request request = new;
+        request.setHeader(http:AUTH_HEADER, string `${http:AUTH_SCHEME_BEARER} ${check generateJwtToken()}`);
+        request.setPayload(result.toJson());
+        http:Response response = check self.httpClient->post("/icp/commandResult", request);
+        if response.statusCode < 200 || response.statusCode >= 300 {
+            return error(string `Command result rejected by ICP server (HTTP ${response.statusCode}) ` +
+                    string `for command ${result.commandId}`);
+        }
+        log:printDebug(string `Command result delivered to ICP server: ${result.commandId}`);
+    }
+
     // Send full heartbeat to ICP server
     isolated remote function sendHeartbeat(Heartbeat heartbeat) returns HeartbeatResponse|error {
         http:Request request = new;
