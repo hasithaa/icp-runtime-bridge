@@ -43,7 +43,7 @@ import io.ballerina.tools.text.TextDocuments;
  * management API, a module of the same {@code ballerina/workflow} package the user already
  * depends on. It opens no port and starts no service; the bridge package itself keeps zero
  * compile-time dependency on {@code ballerina/workflow}. {@code getWorkflowMetadata} and
- * {@code executeManagementCommand} first shipped in workflow 0.9.0, so nothing is generated for
+ * {@code executeCommand} first shipped in workflow 0.9.0, so nothing is generated for
  * older workflow versions — the integration builds as before, just without ICP workflow support.
  */
 public class WorkflowGlueCodeGenerator extends CodeGenerator {
@@ -57,7 +57,7 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
 
         private static final String WORKFLOW_ORG = "ballerina";
         private static final String WORKFLOW_PACKAGE = "workflow";
-        // getWorkflowMetadata/executeManagementCommand first shipped in workflow 0.9.0.
+        // getWorkflowMetadata/executeCommand first shipped in workflow 0.9.0.
         private static final SemanticVersion MIN_WORKFLOW_VERSION = SemanticVersion.from("0.9.0");
         private static final String GLUE_FILE_PREFIX = "icp_workflow_glue";
 
@@ -120,10 +120,49 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
                     }
 
                     isolated function _icpWorkflowCommandExecutor(map<json> command) returns map<json>|error {
-                        _icpWorkflowMgmt:ManagementCommand managementCommand = check command.cloneWithType();
-                        _icpWorkflowMgmt:ManagementCommandResult result =
-                                _icpWorkflowMgmt:executeManagementCommand(managementCommand);
-                        return {httpStatus: result.httpStatus, body: result.body};
+                        _icpWorkflowMgmt:Command|error managementCommand = command.cloneWithType();
+                        if managementCommand is error {
+                            // An operation this workflow version does not know, or parameters
+                            // that do not fit the command shape.
+                            return {
+                                httpStatus: 400,
+                                body: {"error": {"message": managementCommand.message()}}
+                            };
+                        }
+                        json|_icpWorkflowMgmt:Error result = _icpWorkflowMgmt:executeCommand(managementCommand);
+                        if result is _icpWorkflowMgmt:Error {
+                            return {
+                                httpStatus: _icpWorkflowStatusCode(result),
+                                body: _icpWorkflowMgmt:toErrorJson(result)
+                            };
+                        }
+                        // Starting an instance creates one; every other operation reads or
+                        // mutates an existing one.
+                        int status = managementCommand.operation == _icpWorkflowMgmt:START_INSTANCE ? 201 : 200;
+                        return {httpStatus: status, body: result};
+                    }
+
+                    // The tunnel reports command outcomes with the status codes the management
+                    // REST API would have returned. The workflow module says *why* an operation
+                    // failed and stays free of any transport; this maps those reasons onto the
+                    // tunnel's vocabulary, exactly as workflow.management.rest does for HTTP.
+                    isolated function _icpWorkflowStatusCode(_icpWorkflowMgmt:Error err) returns int {
+                        if err is _icpWorkflowMgmt:NotFoundError {
+                            return 404;
+                        }
+                        if err is _icpWorkflowMgmt:AccessDeniedError {
+                            return 403;
+                        }
+                        if err is _icpWorkflowMgmt:InvalidRequestError {
+                            return 400;
+                        }
+                        if err is _icpWorkflowMgmt:ConflictError {
+                            return 409;
+                        }
+                        if err is _icpWorkflowMgmt:InvalidPayloadError {
+                            return 422;
+                        }
+                        return 500;
                     }
                     """;
         }

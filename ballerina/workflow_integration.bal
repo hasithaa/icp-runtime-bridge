@@ -41,7 +41,7 @@ isolated TunneledCommandExecutor? workflowCommandExecutor = ();
 #
 # + metadataProvider - Supplies the metadata document for full heartbeats
 # + commandExecutor - Executes WORKFLOW_MGMT commands, typically an adapter over
-#                     `workflow.management:executeManagementCommand`
+#                     `workflow.management:executeCommand`
 # + return - `true`, so the generated glue can bind the call at module level
 public isolated function registerWorkflowIntegration(WorkflowMetadataProvider metadataProvider,
         TunneledCommandExecutor commandExecutor) returns boolean {
