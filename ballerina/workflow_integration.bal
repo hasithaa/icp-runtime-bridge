@@ -52,6 +52,10 @@ public isolated function registerWorkflowIntegration(WorkflowMetadataProvider me
         workflowCommandExecutor = commandExecutor;
     }
     log:printDebug("Workflow integration registered with the ICP bridge");
+    // Management is this integration's entry point, so keep the program running while
+    // the bridge offers it — otherwise an integration with no service of its own exits
+    // as soon as it has registered. See workflow_hold.bal.
+    holdProgramForWorkflowManagement();
     return true;
 }
 
