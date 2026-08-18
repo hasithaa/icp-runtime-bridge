@@ -131,11 +131,8 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
                         }
                         json|_icpWorkflowMgmt:Error result = _icpWorkflowMgmt:executeCommand(managementCommand);
                         if result is _icpWorkflowMgmt:Error {
-                            // statusCodeOf is the management module's own error→status
-                            // mapping — the same one workflow.management.rest reports — so
-                            // this glue cannot drift from it as error subtypes are added.
                             return {
-                                httpStatus: _icpWorkflowMgmt:statusCodeOf(result),
+                                httpStatus: _icpWorkflowStatusCode(_icpWorkflowMgmt:errorCodeOf(result)),
                                 body: _icpWorkflowMgmt:toErrorJson(result)
                             };
                         }
@@ -143,6 +140,34 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
                         // mutates an existing one.
                         int status = managementCommand.operation == _icpWorkflowMgmt:START_INSTANCE ? 201 : 200;
                         return {httpStatus: status, body: result};
+                    }
+
+                    // The tunnel's result envelope carries `httpStatus` as protocol data — the
+                    // code the management REST API would answer with, which the ICP replays to
+                    // the console verbatim. The workflow module reports only the protocol-
+                    // independent reason (`errorCodeOf`); choosing the number for each reason
+                    // is this envelope's own wire contract, owned here. A reason this glue
+                    // does not know (added after this bridge version) reports 500, and the
+                    // body still carries the runtime's message.
+                    isolated function _icpWorkflowStatusCode(_icpWorkflowMgmt:ErrorCode code) returns int {
+                        match code {
+                            _icpWorkflowMgmt:NOT_FOUND => {
+                                return 404;
+                            }
+                            _icpWorkflowMgmt:ACCESS_DENIED => {
+                                return 403;
+                            }
+                            _icpWorkflowMgmt:INVALID_REQUEST => {
+                                return 400;
+                            }
+                            _icpWorkflowMgmt:CONFLICT => {
+                                return 409;
+                            }
+                            _icpWorkflowMgmt:INVALID_PAYLOAD => {
+                                return 422;
+                            }
+                        }
+                        return 500;
                     }
                     """;
         }
