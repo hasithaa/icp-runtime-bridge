@@ -46,3 +46,7 @@ velocity.log*
 
 # VS Code
 .vscode/
+
+# Runtime ID persisted by the bridge when it runs (also written by `bal test`,
+# since module init registers with the ICP).
+.icp_runtime_id

@@ -218,33 +218,28 @@ isolated function getMainArtifact() returns MainDetail?|error =
     'class: "io.ballerina.lib.wso2.icp.Artifacts"
 } external;
 
-// Strips trailing slashes and any path segment from the configured runtimeHostUrl, returning
-// both the cleaned scheme+host[:port] and the bare authority (host[:port], no scheme) — used
-// by getTryItHost (needs just the host, since the Try-It proxy already knows the target port
-// separately).
-isolated function getConfiguredHostUrl() returns [string, string] {
-    string hostUrl = runtimeHostUrl.trim();
-    // Strip trailing slashes to avoid a malformed "http://host/:port".
+// The authority (host[:port], no scheme) of a configured host URL, with trailing slashes and
+// any path segment removed. Only the authority is wanted: its one caller, getTryItHost, needs
+// the host alone — the Try-It proxy knows the target port separately. Takes the URL as an
+// argument rather than reading the configurable, so the parsing can be tested on its own.
+isolated function authorityOf(string configuredUrl) returns string {
+    string hostUrl = configuredUrl.trim();
+    // Strip trailing slashes so a "host/" does not leave an empty path segment behind.
     while hostUrl.endsWith("/") {
         hostUrl = hostUrl.substring(0, hostUrl.length() - 1);
     }
-    // Isolate the authority (host[:port]); anything before "://" is the scheme.
+    // Anything before "://" is the scheme; what follows, up to the first "/", is the authority.
     int? schemeIndex = hostUrl.indexOf("://");
-    int authorityStart = schemeIndex is int ? schemeIndex + 3 : 0;
-    string authority = hostUrl.substring(authorityStart);
+    string authority = hostUrl.substring(schemeIndex is int ? schemeIndex + 3 : 0);
     int? pathIndex = authority.indexOf("/");
-    if pathIndex is int {
-        authority = authority.substring(0, pathIndex);
-        hostUrl = hostUrl.substring(0, authorityStart) + authority;
-    }
-    return [hostUrl, authority];
+    return pathIndex is int ? authority.substring(0, pathIndex) : authority;
 }
 
 // Bare, reachable host/IP for this runtime (no scheme, no port) reported in every heartbeat so
 // the ICP server can route Try-It proxy requests to it — the per-listener host captured
 // separately (Listeners.java) is often a bind-all address like 0.0.0.0, not a usable target.
 isolated function getTryItHost() returns string {
-    var [_, authority] = getConfiguredHostUrl();
+    string authority = authorityOf(runtimeHostUrl);
     int? portIndex = authority.indexOf(":");
     return portIndex is int ? authority.substring(0, portIndex) : authority;
 }

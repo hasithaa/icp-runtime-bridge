@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import ballerina/jballerina.java;
+import ballerina/lang.runtime;
 import ballerina/log;
 
 // ================================================================================
@@ -33,30 +33,29 @@ import ballerina/log;
 
 # Holds the program open while this bridge accepts workflow management commands.
 # Opens no port and serves no requests — the commands arrive in heartbeat responses;
-# this exists so the runtime has a listener to wait on.
+# this exists so the runtime has something to wait on.
 isolated class WorkflowManagementHold {
 
-    isolated function 'start() returns error? {
-        log:printInfo("Workflow management is enabled; keeping the integration running " +
-                "to serve tunneled commands");
+    public isolated function 'start() returns error? {
+        log:printInfo("Workflow management enabled: this integration accepts management " +
+                "commands tunneled by the ICP, and will keep running to serve them");
         return;
     }
 
-    isolated function gracefulStop() returns error? {
+    public isolated function gracefulStop() returns error? {
         // The tunnel is request/response inside a heartbeat, so a command in flight
         // completes on its own thread; there is nothing to drain here yet. When the
-        // tunnel grows longer-running operations, this is where they settle.
+        // tunnel grows longer-running operations, this is where they settle. The workflow
+        // worker drains separately, through the workflow module's own stop handler.
         log:printInfo("Shutting down: no longer accepting tunneled workflow commands");
         return;
     }
 
-    isolated function immediateStop() returns error? => ();
-
-    isolated function attach(service object {} s, string[]|string? name = ()) returns error? => ();
-
-    isolated function detach(service object {} s) returns error? => ();
+    public isolated function immediateStop() returns error? => ();
 }
 
+// Typed as the class, not as `runtime:DynamicListener`: the wider type is not isolated,
+// so a reference held at that type could not be read from an isolated function.
 final WorkflowManagementHold workflowManagementHold = new;
 
 // Whether the hold has been taken. Taking it twice would be harmless, but the hold
@@ -77,13 +76,8 @@ isolated function holdProgramForWorkflowManagement() {
         }
         programHeld = true;
     }
-    takeRuntimeHold(workflowManagementHold);
+    // A dynamic listener keeps the program running. The runtime offers no way to give a
+    // hold back — deregistering does not let the program exit — so it is taken only once
+    // the conditions above are known to hold.
+    runtime:registerListener(workflowManagementHold);
 }
-
-// Registers the hold with the runtime. A listener registered here keeps the program
-// running; the runtime offers no way to give the hold back, so it is only taken when
-// the conditions above hold.
-isolated function takeRuntimeHold(WorkflowManagementHold hold) = @java:Method {
-    'class: "io.ballerina.lib.wso2.icp.RuntimeHold",
-    name: "takeHold"
-} external;

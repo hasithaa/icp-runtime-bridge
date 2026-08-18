@@ -1,0 +1,11 @@
+# Test configuration. The bridge's module init registers with an ICP server, so it is
+# pointed at a port nothing listens on: registration fails, init logs and returns, and the
+# suite runs against the in-process logic these tests are about. `secret` is required by
+# config.bal and has no default.
+[wso2.icp.runtime.bridge]
+# 32+ bytes: the JWT signer rejects shorter key material for HS256.
+secret = "test-secret-key-material-32-bytes-min"
+serverUrl = "http://localhost:1"
+enableSSL = false
+enableWorkflowManagement = false
+runtimeHostUrl = "http://localhost:9090"

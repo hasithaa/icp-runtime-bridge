@@ -226,10 +226,15 @@ public type HeartbeatResponse record {
     boolean fullHeartbeatRequired?;
     ControlCommand[] commands = [];
     // Names of optional Heartbeat fields the connected ICP server understands (e.g.
-    // "tryItHost", "openApiDefinitions", "workflowMetadata").
-    // Absent on servers that predate this negotiation (they simply reject those
-    // fields), so the bridge must treat a missing value as "no optional fields
-    // supported" rather than an error.
+    // "tryItHost", "openApiDefinitions", "workflowMetadata"). Absent on servers that
+    // predate this negotiation, so the bridge treats a missing value as "no optional
+    // fields supported" rather than an error.
+    //
+    // Negotiation is about not sending payload-heavy documents a server cannot use — it
+    // is not a compatibility requirement for every new field: the server parses Heartbeat
+    // as an open record, so a field it does not know is ignored rather than rejected.
+    // That is why `capabilities`, a short string array, is sent unconditionally while
+    // `workflowMetadata` and `openApiDefinitions` are gated.
     string[] supportedHeartbeatFields?;
     // Boost hint: when set (seconds, typically 1), the server wants the next heartbeat
     // sooner than the configured interval — e.g. while a user is actively working with
