@@ -25,6 +25,14 @@ The bridge operates as an agent within Ballerina runtime environments and consis
 - **Artifact Manager**: Monitors and reports deployed artifacts (services, APIs, listeners)
 - **Configuration Manager**: Manages runtime configuration and credentials
 - **Security Module**: Handles JWT generation and secure authentication
+- **Command Tunnel**: Executes control-plane commands in-process, delivered in heartbeat responses
+  and answered on an outbound call — so the ICP can manage a runtime it cannot connect to
+
+## Documentation
+
+- [The command tunnel](docs/command-tunnel.md) — how a control-plane request reaches a runtime that
+  nothing can connect to: the round trip, the at-most-once guarantees, timing, capability gating,
+  and how to add a new tunneled command kind.
 
 ## Building the Project
 
