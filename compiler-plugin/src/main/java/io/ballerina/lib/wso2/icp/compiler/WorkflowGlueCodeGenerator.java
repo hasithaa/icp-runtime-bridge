@@ -131,8 +131,11 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
                         }
                         json|_icpWorkflowMgmt:Error result = _icpWorkflowMgmt:executeCommand(managementCommand);
                         if result is _icpWorkflowMgmt:Error {
+                            // statusCodeOf is the management module's own error→status
+                            // mapping — the same one workflow.management.rest reports — so
+                            // this glue cannot drift from it as error subtypes are added.
                             return {
-                                httpStatus: _icpWorkflowStatusCode(result),
+                                httpStatus: _icpWorkflowMgmt:statusCodeOf(result),
                                 body: _icpWorkflowMgmt:toErrorJson(result)
                             };
                         }
@@ -140,29 +143,6 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
                         // mutates an existing one.
                         int status = managementCommand.operation == _icpWorkflowMgmt:START_INSTANCE ? 201 : 200;
                         return {httpStatus: status, body: result};
-                    }
-
-                    // The tunnel reports command outcomes with the status codes the management
-                    // REST API would have returned. The workflow module says *why* an operation
-                    // failed and stays free of any transport; this maps those reasons onto the
-                    // tunnel's vocabulary, exactly as workflow.management.rest does for HTTP.
-                    isolated function _icpWorkflowStatusCode(_icpWorkflowMgmt:Error err) returns int {
-                        if err is _icpWorkflowMgmt:NotFoundError {
-                            return 404;
-                        }
-                        if err is _icpWorkflowMgmt:AccessDeniedError {
-                            return 403;
-                        }
-                        if err is _icpWorkflowMgmt:InvalidRequestError {
-                            return 400;
-                        }
-                        if err is _icpWorkflowMgmt:ConflictError {
-                            return 409;
-                        }
-                        if err is _icpWorkflowMgmt:InvalidPayloadError {
-                            return 422;
-                        }
-                        return 500;
                     }
                     """;
         }
