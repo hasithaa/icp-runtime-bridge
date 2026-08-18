@@ -80,6 +80,30 @@ function startICPAgent(IcpClient icpClient, IcpConfig config, string[] supported
     }
 }
 
+// Guards against overlapping heartbeat ticks. The scheduler fires `execute()` at a
+// fixed frequency regardless of whether the previous tick has finished, and a tick can
+// now legitimately run close to one full interval (boost follow-ups) — or past it, when
+// a tunneled command is slow. HeartbeatJob's bookkeeping fields (`heartbeat`,
+// `fullHeartbeatRequired`, `supportedHeartbeatFields`) are unsynchronized, so two ticks
+// must never run concurrently; a tick that finds the flag held simply skips.
+isolated boolean heartbeatTickInProgress = false;
+
+isolated function tryBeginHeartbeatTick() returns boolean {
+    lock {
+        if heartbeatTickInProgress {
+            return false;
+        }
+        heartbeatTickInProgress = true;
+        return true;
+    }
+}
+
+isolated function endHeartbeatTick() {
+    lock {
+        heartbeatTickInProgress = false;
+    }
+}
+
 // Heartbeat job
 public class HeartbeatJob {
     *task:Job;
@@ -102,26 +126,32 @@ public class HeartbeatJob {
     # after executing a tunneled command (its result may already have unblocked the
     # next queued command) or after the server's `nextHeartbeatInSeconds` boost hint
     # (sent while a user is actively working with workflow views). Follow-ups stop
-    # once their accumulated delay would exceed one regular interval, so a tick never
-    # runs much past the next scheduled one — which then continues the boost.
+    # once the tick's real elapsed time — rounds and sleeps alike — would exceed one
+    # regular interval, so a tick never runs much past the next scheduled one, which
+    # then continues the boost. A tick that IS still running when the scheduler fires
+    # again (a slow command, a slow server) makes the new tick a no-op instead of a
+    # second concurrent round: the job's heartbeat bookkeeping fields are not
+    # synchronized, and overlapping rounds would race on them.
     public function execute() {
-        decimal boostBudget = self.interval;
+        if !tryBeginHeartbeatTick() {
+            log:printWarn("Skipping this heartbeat tick — the previous one is still running");
+            return;
+        }
+        decimal tickStart = time:monotonicNow();
         while true {
             decimal? followUpDelay = self.heartbeatRound();
             if followUpDelay is () {
-                return;
+                break;
             }
-            // An immediate follow-up (delay 0, after executing a command) still consumes
-            // budget so a long command queue cannot keep this tick spinning forever.
-            decimal consumed = decimal:max(followUpDelay, 1);
-            if consumed > boostBudget {
-                return;
+            decimal remainingBudget = self.interval - (time:monotonicNow() - tickStart);
+            if followUpDelay >= remainingBudget {
+                break;
             }
-            boostBudget -= consumed;
             if followUpDelay > 0d {
                 runtime:sleep(followUpDelay);
             }
         }
+        endHeartbeatTick();
     }
 
     # Sends one heartbeat (full or delta), processes the response, and decides whether
@@ -200,10 +230,6 @@ public class HeartbeatJob {
             // Handle different command actions
             error? result = ();
             match command.action {
-                WORKFLOW_MGMT => {
-                    tunneledCommandProcessed = true;
-                    result = self.handleTunneledCommand(command);
-                }
                 START|STOP => {
                     string artifactName = command.targetArtifact.name;
                     boolean isStart = command.action == START;
@@ -248,6 +274,20 @@ public class HeartbeatJob {
                         }
                     }
                 }
+                _ => {
+                    // Tunneled command kinds all route through here; their actions are
+                    // bound to executors in ONE place (tunneledCommandBinding), so adding
+                    // a kind cannot silently miss this dispatch. An action with no
+                    // binding is a wiring bug — report it FAILED rather than letting it
+                    // fall through as a silent COMPLETED no-op.
+                    var binding = tunneledCommandBinding(command.action);
+                    if binding is () {
+                        result = error(string `No handler is wired for control action ${command.action}`);
+                    } else {
+                        tunneledCommandProcessed = true;
+                        result = self.handleTunneledCommand(command, binding[0], binding[1]);
+                    }
+                }
             }
 
             // Update command status based on result
@@ -272,14 +312,19 @@ public class HeartbeatJob {
 
     # Executes one tunneled command and posts its result to the ICP. A command past
     # its deadline is dropped unexecuted — the ICP-side caller has already timed
-    # out, and executing (or replying) then would be wasted work or, for mutations,
-    # an unwanted late effect. The command's action selects the executor; adding a
-    # new tunneled command kind means adding an arm to that match.
+    # out and its waiter is gone, so executing (or replying) then would be wasted
+    # work or, for mutations, an unwanted late effect. The drop is reported as an
+    # error so the command's local status honestly reads FAILED, not COMPLETED.
     #
     # + command - The tunneled control command
-    # + return - An error when the payload is unusable or the result could not be
-    #            delivered (the command's status is reported FAILED then)
-    function handleTunneledCommand(ControlCommand command) returns error? {
+    # + executor - The executor bound to this command's action (see
+    #              `tunneledCommandBinding`), or `()` when none is registered
+    # + accepted - Whether this runtime currently accepts this command kind
+    # + return - An error when the payload is unusable, the command had already
+    #            expired, or the result could not be delivered (the command's
+    #            status is reported FAILED then)
+    function handleTunneledCommand(ControlCommand command, TunneledCommandExecutor? executor,
+            boolean accepted) returns error? {
         string rawPayload = command.payload ?: "";
         if rawPayload == "" {
             return error(string `Missing payload for ${command.action} command`);
@@ -290,23 +335,31 @@ public class HeartbeatJob {
         if deadline is string {
             time:Utc|time:Error deadlineTime = time:utcFromString(deadline);
             if deadlineTime is time:Utc && time:utcDiffSeconds(deadlineTime, time:utcNow()) < 0d {
-                log:printWarn(string `Dropping expired command ${payload.commandId} ` +
-                        string `(deadline ${deadline})`);
-                return;
+                return error(string `Dropped expired command ${payload.commandId} unexecuted ` +
+                        string `(deadline ${deadline}) — its ICP-side caller has already timed out`);
             }
         }
 
-        TunneledCommandExecutor? executor = ();
-        boolean accepted = false;
-        match command.action {
-            WORKFLOW_MGMT => {
-                executor = workflowExecutor();
-                accepted = enableWorkflowManagement;
-            }
-        }
         TunneledCommandResult? result = executeTunneledCommand(payload, executor, accepted);
         if result is TunneledCommandResult {
             check self.icpClient->sendCommandResult(result);
         }
     }
+}
+
+# The single place a `ControlAction` is recognized as a tunneled command kind and bound
+# to its executor and acceptance flag. Adding a new tunneled kind means adding an arm
+# here — the dispatch in `handleControlCommands` and the execution plumbing in
+# `command_tunnel.bal` pick it up from this binding alone.
+#
+# + action - The control command's action
+# + return - The executor (or `()` when none registered) and the opt-in flag for this
+#            kind, or `()` when the action is not a tunneled command kind
+function tunneledCommandBinding(ControlAction action) returns [TunneledCommandExecutor?, boolean]? {
+    match action {
+        WORKFLOW_MGMT => {
+            return [workflowExecutor(), enableWorkflowManagement];
+        }
+    }
+    return ();
 }

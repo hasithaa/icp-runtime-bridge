@@ -95,7 +95,7 @@ So a `commandId` is reserved atomically *before* execution, and its result is ke
 ```mermaid
 flowchart TD
     A[Command delivered in a heartbeat response] --> B{Past its deadline?}
-    B -- yes --> B1[Drop it — the caller has already timed out,<br/>so a late mutation is worse than none]
+    B -- yes --> B1[Drop it unexecuted, locally FAILED — the caller has<br/>already timed out, so a late mutation is worse than none]
     B -- no --> C{reserveOrReplay commandId}
 
     C -- already executed --> C1[Replay the stored result]
@@ -168,8 +168,12 @@ The plumbing is generic; a new kind needs four small pieces and no changes to
    Follow `registerWorkflowIntegration` if the executor comes from generated glue.
 3. **Advertise a capability** from `currentCapabilities()`, gated on whatever opt-in the feature
    has, so the ICP only sends the command to runtimes that accept it.
-4. **Add one arm** to the `match command.action` in `handleTunneledCommand`, binding the action to
-   its executor and its `accepted` flag.
+4. **Bind the action** — add one arm to `tunneledCommandBinding` in
+   [`ballerina/main.bal`](../ballerina/main.bal), mapping the action to its executor and its
+   opt-in flag. That function is the single dispatch point: the routing in
+   `handleControlCommands` and the execution in `handleTunneledCommand` both pick the new kind
+   up from this binding alone, so there is no second match to keep in sync. An action that
+   reaches the bridge without a binding is reported `FAILED`, never silently completed.
 
 Everything else — reservation, replay, result envelope, error mapping, deadline handling, posting —
 is already there.
