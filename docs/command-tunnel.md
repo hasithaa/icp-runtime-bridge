@@ -79,12 +79,13 @@ Two things in that picture are the whole design:
 | `commandId` | The correlation ID the ICP is waiting on |
 | `status` | `COMPLETED` when the operation executed, `FAILED` when it could not |
 | `httpStatus` | The status the management API would have returned |
-| `body` | The response body, byte-identical to that API's |
+| `body` | The response body — the same JSON values that API returns. It is re-serialized in transit, so formatting (whitespace, key order) may be normalized; the values are not. |
 
 `status` and `httpStatus` answer different questions, and conflating them is the easy mistake:
 **`status` is about the tunnel, `httpStatus` is about the operation.** A `humanTasks.get` for a
 task that does not exist is `COMPLETED` with `404` — the runtime was asked and answered. `FAILED`
-means the question never got put.
+means the tunnel could not obtain an answer: the command kind is not accepted by this runtime,
+the executor itself failed, or its result was unusable.
 
 ## At-most-once execution
 
@@ -117,10 +118,13 @@ flowchart TD
     J --> K
 ```
 
-The cache is a FIFO of the last `PROCESSED_COMMAND_CACHE_CAPACITY` (64) results, so replay
-protection cannot grow without bound. An eviction is not a correctness problem in practice: a
-redelivery that arrives 64 commands later is long past the ICP's 25s waiter, so nobody is listening
-for it anyway.
+Strictly, the guarantee is at-most-once **within the retention window**: the cache is a FIFO of
+the last `PROCESSED_COMMAND_CACHE_CAPACITY` (64) results, so a redelivery arriving after its id
+has been evicted executes again. The bound is deliberate — replay protection must not grow without
+limit — and it is not a correctness problem at this protocol's timescales: a redelivery 64
+commands later is long past the ICP's 25s waiter, so nobody is listening for it anyway. A future
+command kind whose mutations cannot tolerate that window must bring its own idempotency (an
+operation-level key), not a bigger cache.
 
 The 403 arm deserves a note. The capability is advertised only while a workflow integration is
 registered *and* `enableWorkflowManagement` is true, so a command arriving when either is false
@@ -140,7 +144,9 @@ Latency is bounded by heartbeat cadence, not by a network call:
 | `heartbeatInterval` ≥ ~25s | The first command can outlive the waiter → 504; the retry lands in ~1s because the runtime is boosted. Keep the interval well below 25s |
 
 The `deadline` in the payload is the bridge's own guard: a command whose deadline has passed is
-dropped unexecuted, because the caller has already given up and a late mutation is worse than none.
+dropped unexecuted (reported FAILED locally), because the caller has already given up and a late
+mutation is worse than none. A deadline that cannot be parsed is refused the same way — an
+unassessable deadline is no license to run without one.
 
 ## Capability gating
 
@@ -199,4 +205,5 @@ the ICP without workflows must not pull the workflow module in behind it.
 - an unaccepted kind and a missing executor report `FAILED`/403 without reaching the executor;
 - a redelivered `commandId` replays the stored result and executes exactly once;
 - a command in flight in another round posts nothing;
-- an evicted `commandId` executes again, and a cached one still replays.
+- an evicted `commandId` executes again, and a cached one still replays;
+- an expired deadline and a malformed one both refuse execution; an absent or future one allows it.

@@ -15,6 +15,7 @@
 // under the License.
 
 import ballerina/log;
+import ballerina/time;
 
 // ================================================================================
 // COMMAND TUNNEL
@@ -31,6 +32,28 @@ import ballerina/log;
 # (`{operation, params, identity}`) and returns `{httpStatus, body}` exactly as the
 # corresponding management API would have responded.
 public type TunneledCommandExecutor isolated function (map<json> command) returns map<json>|error;
+
+# Validates a tunneled command's deadline before execution. A command whose deadline
+# has passed must not run — the ICP-side caller has already timed out, and a late
+# mutation is worse than none. A deadline that cannot be parsed is refused the same
+# way: an unassessable deadline is no license to run without one.
+#
+# + deadline - The ISO-8601 instant from the payload, or `()` when the command has none
+# + commandId - The command's correlation ID, for the refusal message
+# + return - `()` when execution may proceed, or an error saying why it must not
+isolated function validateCommandDeadline(string? deadline, string commandId) returns error? {
+    if deadline is () {
+        return;
+    }
+    time:Utc|time:Error deadlineTime = time:utcFromString(deadline);
+    if deadlineTime is time:Error {
+        return error(string `Rejected command ${commandId}: malformed deadline '${deadline}'`, deadlineTime);
+    }
+    if time:utcDiffSeconds(deadlineTime, time:utcNow()) < 0d {
+        return error(string `Dropped expired command ${commandId} unexecuted ` +
+                string `(deadline ${deadline}) — its ICP-side caller has already timed out`);
+    }
+}
 
 // Outcomes of recently executed commands, kept so a redelivered commandId (e.g. its
 // result was lost after execution) replays the stored result instead of executing the

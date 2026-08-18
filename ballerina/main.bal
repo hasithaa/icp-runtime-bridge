@@ -311,17 +311,16 @@ public class HeartbeatJob {
     }
 
     # Executes one tunneled command and posts its result to the ICP. A command past
-    # its deadline is dropped unexecuted — the ICP-side caller has already timed
-    # out and its waiter is gone, so executing (or replying) then would be wasted
-    # work or, for mutations, an unwanted late effect. The drop is reported as an
-    # error so the command's local status honestly reads FAILED, not COMPLETED.
+    # its deadline — or carrying one that cannot be parsed — is dropped unexecuted
+    # (see `validateCommandDeadline`); the drop is reported as an error so the
+    # command's local status honestly reads FAILED, not COMPLETED.
     #
     # + command - The tunneled control command
     # + executor - The executor bound to this command's action (see
     #              `tunneledCommandBinding`), or `()` when none is registered
     # + accepted - Whether this runtime currently accepts this command kind
-    # + return - An error when the payload is unusable, the command had already
-    #            expired, or the result could not be delivered (the command's
+    # + return - An error when the payload is unusable, the deadline had passed or
+    #            was malformed, or the result could not be delivered (the command's
     #            status is reported FAILED then)
     function handleTunneledCommand(ControlCommand command, TunneledCommandExecutor? executor,
             boolean accepted) returns error? {
@@ -330,15 +329,7 @@ public class HeartbeatJob {
             return error(string `Missing payload for ${command.action} command`);
         }
         TunneledCommandPayload payload = check rawPayload.fromJsonStringWithType();
-
-        string? deadline = payload?.deadline;
-        if deadline is string {
-            time:Utc|time:Error deadlineTime = time:utcFromString(deadline);
-            if deadlineTime is time:Utc && time:utcDiffSeconds(deadlineTime, time:utcNow()) < 0d {
-                return error(string `Dropped expired command ${payload.commandId} unexecuted ` +
-                        string `(deadline ${deadline}) — its ICP-side caller has already timed out`);
-            }
-        }
+        check validateCommandDeadline(payload?.deadline, payload.commandId);
 
         TunneledCommandResult? result = executeTunneledCommand(payload, executor, accepted);
         if result is TunneledCommandResult {

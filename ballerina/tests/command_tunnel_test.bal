@@ -38,6 +38,7 @@
 // ============================================================================
 
 import ballerina/test;
+import ballerina/time;
 
 // Executor call bookkeeping. Module-level and lock-guarded because executors are
 // `isolated function`s and cannot close over test-local state; one record, because a lock
@@ -297,4 +298,43 @@ function testResultCacheEvictsOldestFirst() {
     test:assertTrue(replayed !is (), "A cached command must still answer");
     test:assertEquals(executorCallCount(), callsBeforeReplay,
             "A cached commandId must replay rather than execute");
+}
+
+// ── Deadline validation ────────────────────────────────────────────────────────
+// The deadline exists to stop late mutations after the ICP-side caller has given
+// up. Expired and malformed deadlines are both refusals: a deadline the bridge
+// cannot assess gives no license to run without one.
+
+@test:Config {}
+function testDeadlineAbsentAllowsExecution() {
+    test:assertTrue(validateCommandDeadline((), "wfc-deadline-none") is (),
+            "A command without a deadline must be allowed to execute");
+}
+
+@test:Config {}
+function testDeadlineInTheFutureAllowsExecution() {
+    string deadline = time:utcToString(time:utcAddSeconds(time:utcNow(), 60));
+    test:assertTrue(validateCommandDeadline(deadline, "wfc-deadline-future") is (),
+            "A command inside its deadline must be allowed to execute");
+}
+
+@test:Config {}
+function testExpiredDeadlineIsRefused() {
+    string deadline = time:utcToString(time:utcAddSeconds(time:utcNow(), -60));
+    error? refusal = validateCommandDeadline(deadline, "wfc-deadline-past");
+    if refusal is () {
+        test:assertFail("An expired command must be refused");
+    }
+    test:assertTrue(refusal.message().includes("expired"),
+            "The refusal must say the command expired: " + refusal.message());
+}
+
+@test:Config {}
+function testMalformedDeadlineIsRefused() {
+    error? refusal = validateCommandDeadline("not-a-timestamp", "wfc-deadline-bad");
+    if refusal is () {
+        test:assertFail("A command whose deadline cannot be parsed must be refused, not run");
+    }
+    test:assertTrue(refusal.message().includes("malformed"),
+            "The refusal must name the malformed deadline: " + refusal.message());
 }
