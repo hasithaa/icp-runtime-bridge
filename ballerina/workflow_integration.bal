@@ -32,6 +32,10 @@ import ballerina/log;
 # Typically an adapter over `workflow.management:getWorkflowMetadata`.
 public type WorkflowMetadataProvider isolated function () returns map<json>|error;
 
+# The capability advertised to the ICP while this runtime accepts tunneled workflow
+# management commands. The ICP gates delivery on it.
+const string WORKFLOW_COMMANDS_CAPABILITY = "workflowCommands";
+
 isolated WorkflowMetadataProvider? workflowMetadataProvider = ();
 isolated TunneledCommandExecutor? workflowCommandExecutor = ();
 
@@ -97,8 +101,16 @@ isolated function currentWorkflowMetadata() returns map<json>? {
 #
 # + return - The capability names, or `()`
 isolated function currentCapabilities() returns string[]? {
-    if workflowExecutor() !is () && enableWorkflowManagement {
-        return ["workflowCommands"];
+    return capabilitiesFor(workflowExecutor() !is (), enableWorkflowManagement);
+}
+
+// Advertised only when both hold: a workflow integration registered an executor, and the
+// deployment opted in. The ICP tunnels WORKFLOW_MGMT only to runtimes that advertised it, so
+// this is where the integration — not the control plane — decides it may be managed remotely.
+isolated function capabilitiesFor(boolean hasWorkflowExecutor, boolean managementEnabled)
+        returns string[]? {
+    if hasWorkflowExecutor && managementEnabled {
+        return [WORKFLOW_COMMANDS_CAPABILITY];
     }
     return ();
 }

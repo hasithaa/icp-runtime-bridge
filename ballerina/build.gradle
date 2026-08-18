@@ -56,6 +56,11 @@ ballerina {
     module = packageName
     langVersion = ballerinaLangVersion
     isConnector = true
+    // Without this the plugin's default `--includes=io.ballerina.stdlib.*` applies, which matches
+    // nothing in this repo: coverage is then collected for no class at all and every line of every
+    // .bal file is reported as missed. The two patterns are this package's native classes and its
+    // own generated module classes (org `wso2`, so `wso2.icp*` — not `ballerina.*`).
+    testCoverageParam = "--code-coverage --coverage-format=xml --includes=io.ballerina.lib.wso2.icp.*:wso2.icp*"
 }
 
 task updateTomlFiles {

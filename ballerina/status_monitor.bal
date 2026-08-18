@@ -239,7 +239,17 @@ isolated function authorityOf(string configuredUrl) returns string {
 // the ICP server can route Try-It proxy requests to it — the per-listener host captured
 // separately (Listeners.java) is often a bind-all address like 0.0.0.0, not a usable target.
 isolated function getTryItHost() returns string {
-    string authority = authorityOf(runtimeHostUrl);
+    return hostOf(authorityOf(runtimeHostUrl));
+}
+
+// The host of an authority, without the port. A bracketed IPv6 literal keeps its brackets —
+// they are what make the address usable in a URL — and the colons inside it are not port
+// separators, so the port is the colon after the closing bracket.
+isolated function hostOf(string authority) returns string {
+    if authority.startsWith("[") {
+        int? closingBracket = authority.indexOf("]");
+        return closingBracket is int ? authority.substring(0, closingBracket + 1) : authority;
+    }
     int? portIndex = authority.indexOf(":");
     return portIndex is int ? authority.substring(0, portIndex) : authority;
 }
