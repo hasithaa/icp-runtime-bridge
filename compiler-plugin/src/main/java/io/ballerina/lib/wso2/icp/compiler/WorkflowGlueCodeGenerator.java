@@ -109,7 +109,12 @@ public class WorkflowGlueCodeGenerator extends CodeGenerator {
                     import wso2/icp.runtime.bridge as _icpBridge;
 
                     final boolean _icpWorkflowIntegrationRegistered = _icpBridge:registerWorkflowIntegration(
-                            _icpWorkflowMetadataProvider, _icpWorkflowCommandExecutor);
+                            _icpWorkflowMetadataProvider, _icpWorkflowCommandExecutor,
+                            _icpWorkflowTaskQueueProvider);
+
+                    isolated function _icpWorkflowTaskQueueProvider() returns string? {
+                        return _icpWorkflowMgmt:getWorkflowTaskQueue();
+                    }
 
                     isolated function _icpWorkflowMetadataProvider() returns map<json>|error {
                         json raw = (check _icpWorkflowMgmt:getWorkflowMetadata()).toJson();

@@ -117,6 +117,14 @@ public type Heartbeat record {|
     // when the integration accepts tunneled workflow management commands. The server must
     // never send a capability-gated command to a runtime that did not advertise it.
     string[] capabilities?;
+    // The Temporal task queue the integration's workflow worker serves. Runtime state like
+    // capabilities — chosen at program startup, so it can differ between two runtimes of one
+    // program — which is why it travels here rather than inside the workflow metadata
+    // document. A project's integrations share one Temporal namespace, and the queue is what
+    // separates one integration's executions from its neighbours' there. Short, so like
+    // capabilities it is sent unconditionally and stays out of the hash: it cannot change
+    // without a restart, and a restart re-registers with a full heartbeat anyway.
+    string workflowTaskQueue?;
 |};
 
 public type HeartbeatForHash record {|

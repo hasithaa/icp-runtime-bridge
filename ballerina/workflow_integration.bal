@@ -32,12 +32,19 @@ import ballerina/log;
 # Typically an adapter over `workflow.management:getWorkflowMetadata`.
 public type WorkflowMetadataProvider isolated function () returns map<json>|error;
 
+# Supplies the Temporal task queue the integration's workflow worker serves, or nil before
+# the worker has registered. Typically an adapter over
+# `workflow.management:getWorkflowTaskQueue`. Read per heartbeat, so a queue known only
+# after startup still gets reported on the next one.
+public type WorkflowTaskQueueProvider isolated function () returns string?;
+
 # The capability advertised to the ICP while this runtime accepts tunneled workflow
 # management commands. The ICP gates delivery on it.
 const string WORKFLOW_COMMANDS_CAPABILITY = "workflowCommands";
 
 isolated WorkflowMetadataProvider? workflowMetadataProvider = ();
 isolated TunneledCommandExecutor? workflowCommandExecutor = ();
+isolated WorkflowTaskQueueProvider? workflowTaskQueueProvider = ();
 
 # Registers the integration's workflow runtime with this bridge. Called at module
 # init by the compiler-plugin-generated glue; may also be called directly by
@@ -46,14 +53,20 @@ isolated TunneledCommandExecutor? workflowCommandExecutor = ();
 # + metadataProvider - Supplies the metadata document for full heartbeats
 # + commandExecutor - Executes WORKFLOW_MGMT commands, typically an adapter over
 #                     `workflow.management:executeCommand`
+# + taskQueueProvider - Supplies the worker's Temporal task queue, reported beside
+#                       capabilities; optional so older glue keeps binding
 # + return - `true`, so the generated glue can bind the call at module level
 public isolated function registerWorkflowIntegration(WorkflowMetadataProvider metadataProvider,
-        TunneledCommandExecutor commandExecutor) returns boolean {
+        TunneledCommandExecutor commandExecutor,
+        WorkflowTaskQueueProvider? taskQueueProvider = ()) returns boolean {
     lock {
         workflowMetadataProvider = metadataProvider;
     }
     lock {
         workflowCommandExecutor = commandExecutor;
+    }
+    lock {
+        workflowTaskQueueProvider = taskQueueProvider;
     }
     log:printDebug("Workflow integration registered with the ICP bridge");
     // Management is this integration's entry point, so keep the program running while
@@ -71,6 +84,21 @@ isolated function workflowExecutor() returns TunneledCommandExecutor? {
     lock {
         return workflowCommandExecutor;
     }
+}
+
+# Returns the workflow worker's Temporal task queue, or `()` when no workflow
+# integration registered a provider or the worker has not started yet.
+#
+# + return - The task queue, or `()`
+isolated function currentWorkflowTaskQueue() returns string? {
+    WorkflowTaskQueueProvider? provider;
+    lock {
+        provider = workflowTaskQueueProvider;
+    }
+    if provider is () {
+        return ();
+    }
+    return provider();
 }
 
 # Returns the current workflow metadata document, or `()` when no workflow

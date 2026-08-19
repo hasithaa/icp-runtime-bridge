@@ -133,6 +133,13 @@ isolated function getHeartbeat(string[] supportedHeartbeatFields = []) returns H
         heartbeat.capabilities = capabilities;
     }
 
+    // The workflow worker's task queue — runtime state like capabilities, so it travels on
+    // every heartbeat rather than inside the (full-heartbeat-gated) metadata document.
+    string? workflowTaskQueue = currentWorkflowTaskQueue();
+    if workflowTaskQueue is string {
+        heartbeat.workflowTaskQueue = workflowTaskQueue;
+    }
+
     return heartbeat;
 }
 
