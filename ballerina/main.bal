@@ -28,20 +28,39 @@ function init() returns error? {
     IcpClient icpClient = check new (config);
     log:printInfo("ICP agent initialized with server URL: " + config.serverUrl);
 
-    // Send initial heartbeat to register with ICP server. Fields the ICP server confirmed
-    // it understands come back on this same call — no extra round-trip needed to discover
-    // them.
-    string[]|error supportedFieldsResult = sendInitialHeartbeat(icpClient);
-    if supportedFieldsResult is error {
-        log:printError("Failed initial heartbeat registration with ICP server", supportedFieldsResult);
-        return;
-    }
-    string[] supportedFields = supportedFieldsResult;
-
     worker w1 returns error? {
+        // Register with the ICP: the initial heartbeat also learns which fields the server
+        // supports. A failure here used to be terminal — one connection reset or server
+        // hiccup at boot left the runtime permanently invisible while its workflows kept
+        // executing — so registration retries with backoff until the server answers.
+        string[] supportedFields = registerWithRetry(icpClient);
         check startICPAgent(icpClient, config, supportedFields);
     }
 
+}
+
+# Sends the initial heartbeat until the ICP acknowledges it, backing off between attempts
+# (5s more per attempt, capped at a minute). The agent's whole job is talking to the ICP,
+# so there is no attempt budget after which giving up would be more useful than retrying.
+#
+# + icpClient - the ICP client
+# + return - the heartbeat fields the server confirmed it understands
+function registerWithRetry(IcpClient icpClient) returns string[] {
+    int attempt = 0;
+    while true {
+        attempt += 1;
+        string[]|error result = sendInitialHeartbeat(icpClient);
+        if result is string[] {
+            if attempt > 1 {
+                log:printInfo(string `Registered with the ICP server after ${attempt} attempts`);
+            }
+            return result;
+        }
+        decimal delay = <decimal>int:min(60, attempt * 5);
+        log:printError(string `Initial heartbeat registration failed (attempt ${attempt}); retrying in ${delay}s`,
+                result);
+        runtime:sleep(delay);
+    }
 }
 
 function sendInitialHeartbeat(IcpClient icpClient) returns string[]|error {
